@@ -14,6 +14,7 @@ make 2&>/dev/null
 
 echo "=== Starting Server on Port $PORT ==="
 ./bin/server $PORT &
+SERVER_PID=$!
 
 sleep 1
 
@@ -25,4 +26,4 @@ echo "=== Running Test Operations ==="
         | nc localhost $PORT | hexdump -C
 
 sleep 2
-pkill a11
+kill -9 $SERVER_PID

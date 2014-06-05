@@ -59,12 +59,15 @@ uint32_t handle_request(calc_request_t request) {
         for(i=0;i<request->argc;i++) {
             result += request->arguments[i];
         }
+        printf("[DEBUG] handle_request sum %d \n", result);
         return result;
     }
     
     /* Return argument count */
     if(request->function==MSG_TYPE_COUNT) {
-        return (uint32_t)request->argc; 
+        uint32_t argc = ntohl((int32_t)request->argc); 
+        printf("[DEBUG] handle_request count %d \n", argc);
+        return argc;
     }
 
     return -1;
@@ -120,9 +123,9 @@ void* worker_thread(void* arg) {
         
         /* Handle Request */ 
         printf("[DEBUG] Handling Request\n");
-        result = htonl(handle_request(request));
+        result = handle_request(request);
         
-        printf("[DEBUG] Calculated Result %d\n", result);
+        printf("[DEBUG] Calculated Result %d\n", (uint32_t)result);
 
         /* Sending Response */
         bzero(buffer, BUFFER_SIZE);
