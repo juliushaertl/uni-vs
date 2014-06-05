@@ -13,7 +13,7 @@ PORT="7890"
 make 2&>/dev/null
 
 echo "=== Starting Server on Port $PORT ==="
-./build/server $PORT &
+./bin/server $PORT &
 
 sleep 1
 

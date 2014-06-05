@@ -6,7 +6,8 @@ SOURCEDIR=src/
 all: server
 
 server:
-	$(CC) $(CFLAGS) -pthread $(SOURCEDIR)server.c $(SOURCEDIR)/protocol.c -o $(BUILDDIR)$@
+	mkdir -p bin/
+	$(CC) $(CFLAGS) -pthread $(SOURCEDIR)server.c $(SOURCEDIR)protocol.c -o $(BUILDDIR)$@
 
 clean:
 	rm -rf $(BUILDDIR)*
