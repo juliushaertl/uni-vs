@@ -10,10 +10,6 @@
  *  - Count the given arguments
  *  - Shutdown the server
  *
- * ToDo:
- * exit Server on 0x02
- * thread exit handling
- *
  */
 
 #include <stdio.h>
@@ -24,26 +20,25 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netdb.h>
 #include <stdarg.h>
 #include <pthread.h>
-#include <netdb.h>
 
 #include "protocol.h"
+#include "list.h"
 
-#define SERVER_PORT 7890
 #define BUFFER_SIZE 6
 #define QUEUE_SIZE 5
-#define THREAD_NUMBER 4
-#define GLOBAL_CMD_EXIT 1
 
 void handle_error_code(char* msg, int err);
 void handle_error(char* msg);
+void exit_server();
 int read_request(int listen_s, char* rbuf, int rbuf_size, short* data);
 
-
-pthread_t threadid[THREAD_NUMBER];
-pthread_mutex_t thread_lock;
-int global_cmd;
+/* global variables */
+pthread_mutex_t socket_list_lock;
+node_t* socket_list;
+int sock_d_server, sock_d_client;
 
 /* make calculations based on calc_request_t
  * return -1 on error
@@ -59,13 +54,12 @@ uint32_t handle_request(calc_request_t request) {
         for(i=0;i<request->argc;i++) {
             result += request->arguments[i];
         }
-        printf("[DEBUG] handle_request sum %d \n", result);
         return result;
     }
     
     /* Return argument count */
     if(request->function==MSG_TYPE_COUNT) {
-        uint32_t argc = ntohl((int32_t)request->argc); 
+        uint32_t argc = (int32_t)request->argc; 
         printf("[DEBUG] handle_request count %d \n", argc);
         return argc;
     }
@@ -75,11 +69,12 @@ uint32_t handle_request(calc_request_t request) {
 
 /* Thread Handler for Socket Connection */
 void* worker_thread(void* arg) {
-
+   
     /* socket */
     int i;
     int sock_d, rw; 
     sock_d = *(int*)arg;
+    unsigned char cmd;
 
     /* request */
     char header[3];
@@ -94,6 +89,13 @@ void* worker_thread(void* arg) {
     buffer = malloc(BUFFER_SIZE);
     bzero(buffer, BUFFER_SIZE);
     
+    pthread_mutex_lock(&socket_list_lock);
+    socket_list = list_add(socket_list, sock_d);
+    printf("Added Socket to list:\n");
+    list_print(socket_list);
+    pthread_mutex_unlock(&socket_list_lock);
+
+    printf("[DEBUG] Worker Thread started\n");
     /* Allways read first three bytes of protocol */
     while((rw = read(sock_d, header, 3*sizeof(char)))) {
 
@@ -106,8 +108,10 @@ void* worker_thread(void* arg) {
         /* Parse Protocol */
         request = calc_request_init(header[0], header[1], header[2]);
 
+        cmd = header[1];
+
         /* exit server on MSG_TYPE_EXIT */
-        if(header[1]==0x02)
+        if(header[1]==MSG_TYPE_EXIT)
             break;
 
         printf("[DEBUG] Parsing %d arguments\n", header[2]);
@@ -115,39 +119,62 @@ void* worker_thread(void* arg) {
             rw = read(sock_d, &single, 4);
             if(rw < 0)
                 handle_error_code("Error reading arguments", rw);
-
-            printf("[DEBUG] ARG %d:%02x\n",i,single);
             request->arguments[i] = ntohl(single);
+            printf("[DEBUG] ARG %d = %u\n",i,request->arguments[i]);
         }
 
         
         /* Handle Request */ 
         printf("[DEBUG] Handling Request\n");
         result = handle_request(request);
-        
-        printf("[DEBUG] Calculated Result %d\n", (uint32_t)result);
+        printf("[DEBUG] Calculated Result %u\n", (uint32_t)result);
 
         /* Sending Response */
         bzero(buffer, BUFFER_SIZE);
         buffer[0] = request->request_id;
         buffer[1] = request->function;
+        result = htonl(result);
         memcpy(buffer+2, &result, sizeof(uint32_t));
-        printf("Sending response %08x\n", *buffer);
+        printf("[DEBUG] Sending response %08x\n", *(buffer+2));
         rw = write(sock_d, buffer, BUFFER_SIZE);
         if(rw < 0) {
             handle_error_code("Error writing to socket", rw);
         }
     }
-
+    
+    free(buffer);
+    if(cmd==0x02) {
+        exit_server();
+    }
+    printf("[DEBUG] Worker Thread ended\n");
     close(sock_d);
-    printf("Socket closed using 0x02 command\n");
+
+    pthread_mutex_lock(&socket_list_lock);
+    socket_list = list_delete(socket_list, sock_d);
+    pthread_mutex_unlock(&socket_list_lock);
+
     pthread_exit(0);
 
+}
+void exit_server() {
+
+    /* closing sockets */
+    pthread_mutex_lock(&socket_list_lock);
+    while(socket_list != NULL) {
+        printf("Closing socket %d \n", socket_list->value);
+        close(socket_list->value);
+        socket_list = list_delete(socket_list,socket_list->value);
+    }
+    pthread_mutex_unlock(&socket_list_lock);
+
+    close(sock_d_server);
+
+    exit(0);
 
 }
-
 /* error handling functions */
 void handle_error_code(char* msg, int err) {
+
     if(err==0) {
         fprintf(stderr, "[ERROR] %s\n", msg);
         err=-1;
@@ -156,10 +183,13 @@ void handle_error_code(char* msg, int err) {
     }
     perror(NULL);
     exit(err);
+
 }
 
 void handle_error(char* msg) {
+
     handle_error_code(msg, 0);
+
 }
 
 
@@ -168,17 +198,16 @@ int main(int argc, char** argv) {
     /* ignore unused variable */
     (void)argc;
 
-    int sock_d_server, sock_d_client;
     struct addrinfo flags;
     struct addrinfo *host_info;
     socklen_t addr_size;
+    pthread_t threadid;
 
     struct sockaddr_storage client;
 
     pthread_attr_t attr;
-    int i;
 
-    global_cmd = 0;
+    pthread_mutex_init(&socket_list_lock, NULL);
 
     if (argc < 2) {
         handle_error("Error: no port provided\n");
@@ -205,6 +234,7 @@ int main(int argc, char** argv) {
     if (bind(sock_d_server, host_info->ai_addr, host_info->ai_addrlen) < 0) {
         handle_error("Error on binding");
     }
+    printf("[DEBUG] Bind to Port %s \n", argv[1]);
 
     freeaddrinfo(host_info); 
 
@@ -215,29 +245,18 @@ int main(int argc, char** argv) {
 
     listen(sock_d_server, QUEUE_SIZE); 
     addr_size = sizeof(client);
-    i = 0;
 
     while (1) {
-        /* check for global server command from threads */
-        if(global_cmd) {
-        
-        }
-        if (i == THREAD_NUMBER) {
-            i = 0;
-        }
 
         sock_d_client = accept(sock_d_server, (struct sockaddr *) &client, &addr_size);
 
         if (sock_d_client < 0) {
             handle_error("Error on accept");
         }
-        
-        pthread_create(&threadid[i++], &attr, &worker_thread, (void *)&sock_d_client);
-        sleep(0); /* give threads some cpu time */
+            
+        pthread_create(&threadid, &attr, &worker_thread, (void *)&sock_d_client);
+        sleep(0); 
     }
-
-    /* cancel all existing threads */
-
 
     return 0;
 

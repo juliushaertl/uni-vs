@@ -26,4 +26,3 @@ echo "=== Running Test Operations ==="
         | nc localhost $PORT | hexdump -C
 
 sleep 2
-kill -9 $SERVER_PID
